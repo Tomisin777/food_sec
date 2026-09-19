@@ -89,7 +89,10 @@ CREATE TABLE check_ins (
     id              BIGSERIAL PRIMARY KEY,
     time            TIMESTAMPTZ NOT NULL DEFAULT now(),
     pantry_id       UUID NOT NULL REFERENCES pantries(id) ON DELETE CASCADE,
-    household_size  INT NOT NULL CHECK (household_size >= 1 AND household_size <= 20)
+    household_size  INT NOT NULL CHECK (household_size >= 1 AND household_size <= 20),
+    distribution_model distribution_model,
+    estimated_lbs   NUMERIC(8,2),
+    items           JSONB NOT NULL DEFAULT '[]'::jsonb
 );
 
 CREATE INDEX idx_checkins_pantry ON check_ins (pantry_id, time DESC);
