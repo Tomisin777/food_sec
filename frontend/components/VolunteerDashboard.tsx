@@ -120,8 +120,16 @@ export default function VolunteerDashboard({ activePantry, onExit, onUpdateInven
   });
   const [donationsAddedNotice, setDonationsAddedNotice] = useState(false);
 
-  const [closingGuesses, setClosingGuesses] = useState<Record<string, StockBand>>({});
+  const [closingOverrides, setClosingOverrides] = useState<Record<string, StockBand>>({});
   const [closingSaved, setClosingSaved] = useState(false);
+
+  const closingGuesses = useMemo(() => {
+    const guesses: Record<string, StockBand> = {};
+    shelf.forEach((item) => {
+      guesses[item.category_name] = (item.band || 'low') as StockBand;
+    });
+    return { ...guesses, ...closingOverrides };
+  }, [shelf, closingOverrides]);
 
   const now = new Date();
   const [reportYear, setReportYear] = useState(now.getFullYear());
@@ -136,33 +144,28 @@ export default function VolunteerDashboard({ activePantry, onExit, onUpdateInven
     [pantryId]
   );
 
-  const refreshFromServer = useCallback(async () => {
+  useEffect(() => {
     if (!pantryId) return;
-    try {
-      const [today, liveShelf] = await Promise.all([fetchToday(pantryId), fetchShelf(pantryId)]);
-      setFamiliesServed(today.households_served ?? today.check_in_count ?? 0);
-      setPeopleServed(today.people_served ?? today.total_households ?? 0);
-      if (liveShelf.distribution_model) setDistributionModel(liveShelf.distribution_model);
-      if (liveShelf.items?.length) {
-        setShelf(liveShelf.items);
-        writeShelfOverlay(pantryId, overlayFromShelf(liveShelf.items));
+    let cancelled = false;
+    (async () => {
+      try {
+        const [today, liveShelf] = await Promise.all([fetchToday(pantryId), fetchShelf(pantryId)]);
+        if (cancelled) return;
+        setFamiliesServed(today.households_served ?? today.check_in_count ?? 0);
+        setPeopleServed(today.people_served ?? today.total_households ?? 0);
+        if (liveShelf.distribution_model) setDistributionModel(liveShelf.distribution_model);
+        if (liveShelf.items?.length) {
+          setShelf(liveShelf.items);
+          writeShelfOverlay(pantryId, overlayFromShelf(liveShelf.items));
+        }
+      } catch (err) {
+        console.warn('Operator store unavailable, using local pantry snapshot', err);
       }
-    } catch (err) {
-      console.warn('Operator store unavailable, using local pantry snapshot', err);
-    }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [pantryId]);
-
-  useEffect(() => {
-    refreshFromServer();
-  }, [refreshFromServer]);
-
-  useEffect(() => {
-    const guesses: Record<string, StockBand> = {};
-    shelf.forEach((item) => {
-      guesses[item.category_name] = (item.band || 'low') as StockBand;
-    });
-    setClosingGuesses(guesses);
-  }, [shelf]);
 
   const beginListOrder = (size: number) => {
     const draft: Record<string, number> = {};
@@ -321,27 +324,41 @@ export default function VolunteerDashboard({ activePantry, onExit, onUpdateInven
         return { category_name, band, estimated_qty: current?.estimated_qty ?? null, category_id: current?.category_id };
       });
       const result = await postCorrection(pantryId, corrections);
-      const updated = (result.updated || []).map(
-        (row: { category_name?: string; band: StockBand; estimated_qty: number; confidence: number; source: string; category_id?: number }) => {
-          const prev = shelf.find(
-            (s) =>
-              (row.category_id != null && s.category_id === row.category_id) ||
-              (row.category_name && s.category_name.toLowerCase() === row.category_name.toLowerCase())
-          );
-          return {
-            category_id: row.category_id ?? prev?.category_id,
-            category_name: row.category_name || prev?.category_name || '',
-            category_emoji: prev?.category_emoji,
-            band: row.band,
-            estimated_qty: row.estimated_qty,
-            confidence: 1.0,
-            source: 'volunteer_correction',
-            minutes_ago: 0,
-            lbs_per_person: prev?.lbs_per_person,
-          };
-        }
-      );
-      if (updated.length) publishShelf(updated);
+      const live = await fetchShelf(pantryId);
+      if (live.items?.length) {
+        publishShelf(live.items);
+      } else if (Array.isArray(result.updated) && result.updated.length) {
+        publishShelf(
+          result.updated.map(
+            (row: {
+              category_name?: string;
+              band: StockBand;
+              estimated_qty: number;
+              confidence: number;
+              source: string;
+              category_id?: number;
+            }) => {
+              const prev = shelf.find(
+                (s) =>
+                  (row.category_id != null && s.category_id === row.category_id) ||
+                  (row.category_name && s.category_name.toLowerCase() === row.category_name.toLowerCase())
+              );
+              return {
+                category_id: row.category_id ?? prev?.category_id,
+                category_name: row.category_name || prev?.category_name || '',
+                category_emoji: prev?.category_emoji,
+                band: row.band,
+                estimated_qty: row.estimated_qty,
+                confidence: row.confidence ?? 1.0,
+                source: row.source || 'volunteer_correction',
+                minutes_ago: 0,
+                lbs_per_person: prev?.lbs_per_person,
+              };
+            }
+          )
+        );
+      }
+      setClosingOverrides({});
       setClosingSaved(true);
       setTimeout(() => setClosingSaved(false), 3000);
     } catch (err) {
@@ -774,7 +791,7 @@ export default function VolunteerDashboard({ activePantry, onExit, onUpdateInven
                           <button
                             key={band}
                             onClick={() => {
-                              setClosingGuesses({ ...closingGuesses, [item.category_name]: band });
+                              setClosingOverrides({ ...closingOverrides, [item.category_name]: band });
                               if (onUpdateInventory) onUpdateInventory(item.category_name, band);
                             }}
                             className={`py-2 text-xs font-bold rounded-xl border transition ${

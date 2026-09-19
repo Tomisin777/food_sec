@@ -71,6 +71,8 @@ export function applyOverlays(pantries: Pantry[]): Pantry[] {
             band: item.band,
             minutes_ago: item.minutes_ago ?? 0,
             confidence: item.confidence ?? 1,
+            estimated_qty: item.estimated_qty,
+            source: item.source,
           };
         })
       : pantry.shelf_items;

@@ -33,6 +33,16 @@ const PantryMap = dynamic(() => import('@/components/PantryMap'), {
   ),
 });
 
+type BrowserSpeechRecognition = {
+  lang: string;
+  interimResults: boolean;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  start: () => void;
+};
+
 export default function Home() {
   // Navigation & Search State
   const [pantriesList, setPantriesList] = useState<Pantry[]>(BALTIMORE_PANTRIES);
@@ -54,7 +64,16 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const sync = () => setPantriesList((prev) => applyOverlays(prev));
+    const sync = () => {
+      setPantriesList((prev) => {
+        const next = applyOverlays(prev);
+        setSelectedPantry((current) => {
+          if (!current) return current;
+          return next.find((p) => p.id === current.id) || current;
+        });
+        return next;
+      });
+    };
     sync();
     window.addEventListener('storage', sync);
     window.addEventListener(SHELF_UPDATED_EVENT, sync);
@@ -104,15 +123,20 @@ export default function Home() {
   // Speech recognition handler
   const handleVoiceSearch = () => {
     if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
+      const speechWindow = window as Window & {
+        SpeechRecognition?: new () => BrowserSpeechRecognition;
+        webkitSpeechRecognition?: new () => BrowserSpeechRecognition;
+      };
+      const SpeechRecognitionImpl = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+      if (!SpeechRecognitionImpl) return;
+      const recognition = new SpeechRecognitionImpl();
       recognition.lang = language === 'es' ? 'es-ES' : 'en-US';
       recognition.interimResults = false;
 
       recognition.onstart = () => setIsListening(true);
       recognition.onend = () => setIsListening(false);
       recognition.onerror = () => setIsListening(false);
-      recognition.onresult = (event: any) => {
+      recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         setQuery(transcript);
         handleExecuteSearch(transcript);
@@ -128,8 +152,15 @@ export default function Home() {
   const handleExecuteSearch = (searchQuery: string) => {
     setQuery(searchQuery);
     setHasSearched(true);
-    // Select first matching pantry automatically for detail view on desktop
-    setSelectedPantry(BALTIMORE_PANTRIES[0]);
+    const q = searchQuery.trim().toLowerCase();
+    const match =
+      pantriesList.find(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.neighborhood.toLowerCase().includes(q) ||
+          p.address.toLowerCase().includes(q)
+      ) || pantriesList[0];
+    setSelectedPantry(match);
   };
 
   // Filtered Pantries
