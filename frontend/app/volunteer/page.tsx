@@ -2,11 +2,13 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import VolunteerDashboard from '@/components/VolunteerDashboard';
 import { BALTIMORE_PANTRIES, Pantry } from '@/lib/pantryData';
 import { Lock, ArrowLeft, ShieldCheck, Building2, KeyRound, AlertCircle } from 'lucide-react';
 
 export default function VolunteerPage() {
+  const router = useRouter();
   const [selectedPantryId, setSelectedPantryId] = useState<string>(BALTIMORE_PANTRIES[0].id);
   const [authenticatedPantry, setAuthenticatedPantry] = useState<Pantry | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -41,6 +43,7 @@ export default function VolunteerPage() {
             setIsAuthenticated(false);
             setAuthenticatedPantry(null);
             setPin('');
+            router.push('/');
           }}
         />
       </main>

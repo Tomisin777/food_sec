@@ -72,10 +72,13 @@ Per project requirements, the system is strictly split into two completely isola
   * `GET /api/pantries` — Geospatial radius search returning pantries and live stock items
   * `GET /api/pantries/{pantry_id}` — Single pantry detail
   * `GET /api/categories` — Master food category list
-  * `POST /api/inventory/checkin` — Household visit logging
+  * `POST /api/inventory/checkin` — Household visit logging **plus predict-and-correct depletion** (respects `distribution_model`)
   * `POST /api/inventory/intake` — Photo donation endpoint
-  * `POST /api/inventory/correction` — Volunteer closing check update
-  * `GET /api/inventory/{pantry_id}/today` — Today's households served metrics
+  * `POST /api/inventory/correction` — Volunteer closing check; snaps estimates to ground truth with `source=volunteer_correction` and `confidence=1.0`
+  * `GET /api/inventory/{pantry_id}/today` — Today's households / individuals served
+  * `GET /api/inventory/{pantry_id}/shelf` — Latest estimated quantities for the closing-check UI
+  * `PATCH /api/inventory/{pantry_id}/distribution` — Persist pre-packed / list / client-choice
+  * `GET /api/inventory/{pantry_id}/report?year=&month=` — TEFAP / Maryland Food Bank monthly CSV
 
 ### C. Modern Next.js Frontend (`frontend/`)
 * Built with Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, Lucide Icons, and Leaflet.
@@ -88,11 +91,13 @@ Per project requirements, the system is strictly split into two completely isola
   * Emergency voice hotline card (*"(410) 555-FOOD"*) for smartphone-dependent clients.
 * **Pantry Operator Portal (`frontend/app/volunteer/page.tsx` & `components/VolunteerDashboard.tsx`):**
   * Protected by 4-digit volunteer code (**`4827`**).
-  * **Check-In Touchpad:** Large 1 to 8+ household size buttons that increment the "Families served today" counter.
+  * **Check-In Touchpad:** Large 1 to 8+ household size buttons that increment the "Families served today" counter **and deplete estimated shelf quantities**.
+  * **Distribution Style Selector:** Operators pick Pre-packed boxes, Pick from a list, or Shop the shelves (client choice). Persisted per pantry; check-in math follows the model.
   * **Quick Run-out Flags:** 1-tap toggles for Produce, Protein, Dairy, Diapers, Hygiene to immediately alert neighbors on the map.
   * **Live Camera Viewfinder (`frontend/components/CameraViewfinder.tsx`):** Integrated browser webcam/phone camera stream with live shutter button and front/back camera toggle.
   * **Gemini 3.6 Flash Multimodal Scanner (`frontend/app/api/scan-donation/route.ts`):** Sends snapped photo in-memory to Google Gemini, methodically scans and categorizes items with zero-temperature accuracy, displays editable `+` and `−` review counters, and commits updates to shelves with privacy guarantees (*"Photo is deleted immediately after sorting"*).
-  * **Closing Check:** 10-second end-of-shift review where volunteers confirm or override the predict-and-correct model guesses.
+  * **Closing Check:** 10-second end-of-shift review where volunteers confirm or override the predict-and-correct model guesses. **Send update** writes `volunteer_correction` rows with confidence **1.0**.
+  * **TEFAP Monthly Report:** Reports tab exports a CSV of households served, family-size breakdown, and estimated pounds for the selected month.
 
 ---
 
@@ -101,41 +106,50 @@ Per project requirements, the system is strictly split into two completely isola
 ```
 Food Pantry/
 ├── .gitignore
-├── PROJECT_HANDOFF.md          <-- (This file)
-├── docker-compose.yml          <-- TimescaleDB + PostGIS container config
+├── PROJECT_HANDOFF.md
+├── docker-compose.yml
 ├── db/
-│   ├── init.sql                <-- Postgres schema & spatial functions
-│   └── seed.sql                <-- 10 real Baltimore pantries seed data
+│   ├── init.sql
+│   ├── migrate_predict_and_correct.sql
+│   └── seed.sql
 ├── backend/
 │   ├── .env.example
 │   ├── config.py
-│   ├── db.py                   <-- asyncpg connection pool
-│   ├── main.py                 <-- FastAPI server
-│   ├── models.py               <-- Pydantic models
+│   ├── db.py
+│   ├── main.py
+│   ├── models.py
+│   ├── estimator.py
+│   ├── report.py
 │   ├── requirements.txt
+│   ├── tests/
+│   │   ├── test_estimator.py
+│   │   └── test_report.py
 │   └── routers/
 │       ├── inventory.py
 │       └── pantries.py
 └── frontend/
-    ├── .env.local              <-- Contains GEMINI_API_KEY (gitignored)
     ├── package.json
     ├── tsconfig.json
     ├── app/
     │   ├── globals.css
     │   ├── layout.tsx
-    │   ├── page.tsx            <-- Pure Client/Neighbor App (Route: /)
-    │   ├── volunteer/
-    │   │   └── page.tsx        <-- Dedicated Pantry Operator Portal (Route: /volunteer)
+    │   ├── page.tsx
+    │   ├── volunteer/page.tsx
     │   └── api/
-    │       └── scan-donation/
-    │           └── route.ts    <-- Gemini 3.6 Flash vision intake API
+    │       ├── inventory/          <-- check-in, correction, shelf, report, distribution
+    │       └── scan-donation/route.ts
     ├── components/
-    │   ├── CameraViewfinder.tsx<-- Live camera capture & shutter
+    │   ├── CameraViewfinder.tsx
     │   ├── PantryDetailSheet.tsx
-    │   ├── PantryMap.tsx       <-- Interactive Leaflet map with stock pins
+    │   ├── PantryMap.tsx
     │   └── VolunteerDashboard.tsx
     └── lib/
-        └── pantryData.ts       <-- Seed dataset and TypeScript interfaces
+        ├── estimator.ts
+        ├── inventoryApi.ts
+        ├── operatorStore.ts
+        ├── pantryData.ts
+        ├── reportCsv.ts
+        └── shelfSync.ts
 ```
 
 ---
@@ -153,38 +167,15 @@ Food Pantry/
 
 ## 6. What Needs to Be Done Next (Roadmap for Grok Bot)
 
-Here are the highest-priority tasks remaining to complete the hackathon prototype:
+### Done on this pass
+1. **Distribution Style Selector** — volunteer portal persists `pre_packed` / `list` / `client_choice` and check-in depletion follows the model.
+2. **Predict-and-correct estimator** — check-ins write `shelf_state` with `source=prediction`; closing **Send update** snaps quantities and sets `confidence=1.0` / `volunteer_correction`. Neighbor map/detail read the overlay.
+3. **TEFAP monthly CSV** — Reports tab → Export Monthly Report.
 
-### Task 1: Deepen the Pantry Operator Portal (`frontend/app/volunteer/page.tsx`)
-1. **Onboarding / Distribution Style Selector (Mockup Page 4):**
-   * Allow pantry managers to set up or toggle their distribution model:
-     - *Pre-packed boxes*: Outflow = 1 box per check-in.
-     - *Pick from a list*: Order-based item deduction.
-     - *They shop the shelves (Client Choice)*: Predict-and-correct estimation.
-2. **Category Customization:**
-   * Allow pantries to add custom categories (e.g., Kosher items, Infant formula, Pet food).
-
-### Task 2: Implement the Predict-and-Correct State Estimator Engine
-* Connect the check-in count directly to shelf depletion:
-  $$\text{Depleted Qty} = \text{Household Size} \times \text{Allocation Per Person}$$
-* For example, when 5 families of size 4 check in (20 people), calculate that ~30 lbs of Produce and ~20 lbs of Protein have left the shelves.
-* When the estimated remaining quantity dips below category thresholds:
-  - $> 20$ units $\rightarrow$ **Plenty** (Green)
-  - $5 - 20$ units $\rightarrow$ **Low** (Amber)
-  - $< 5$ units $\rightarrow$ **Out** (Red)
-* During the **Closing Check**, when the volunteer clicks **"Send update"**, the model snaps to ground truth and resets the confidence score to $1.0$.
-
-### Task 3: Auto-Generate TEFAP & Maryland Food Bank Monthly Compliance Report
-* Food pantries in Baltimore must submit monthly reports of households served, family size breakdowns, and total pounds distributed under TEFAP compliance.
-* Add an **"Export Monthly Report"** button in the volunteer portal that generates a clean downloadable summary (or CSV/PDF) from the check-ins table. *(This is the #1 feature that saves pantry managers hours of manual work).*
-
-### Task 4: Voice Hotline Integration (ElevenLabs + Twilio)
-* Setup an incoming phone hotline for callers with limited smartphone access.
-* The ElevenLabs agent prompt: *"Hello! I can check live Baltimore food pantry shelves for you. What items do you need and what is your ZIP code?"*
-* Configured with a server tool that hits the `/api/pantries` search endpoint.
-
-### Task 5: Production Deployment (Vercel)
-* Deploy the Next.js app to Vercel so judges and team members can open the live URL directly on their smartphones during judging.
+### Still open
+1. **Category Customization:** Allow pantries to add custom categories (e.g., Kosher items, Infant formula, Pet food).
+2. **Voice Hotline Integration (ElevenLabs + Twilio):** incoming phone hotline with a server tool that hits `/api/pantries`.
+3. **Production Deployment (Vercel).**
 
 ---
 
@@ -204,4 +195,11 @@ npm run dev
 # 3. Open in Browser
 # Neighbor/Client App: http://localhost:3000
 # Pantry Operator Portal: http://localhost:3000/volunteer (PIN: 4827)
+#
+# Verify pantry features:
+# 1. Pick a pantry, enter PIN 4827.
+# 2. Choose a distribution style (Pre-packed / List / Shop the shelves) — it persists.
+# 3. Tap household sizes; toast shows lbs deducted. Closing check → Send update (confidence 1.0).
+# 4. Reports tab → Export Monthly Report downloads a TEFAP CSV.
+# 5. Exit to Neighbor View: map pins / detail sheet reflect the new bands.
 ```

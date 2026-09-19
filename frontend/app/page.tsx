@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { BALTIMORE_PANTRIES, Pantry } from '@/lib/pantryData';
 import PantryDetailSheet from '@/components/PantryDetailSheet';
 import VolunteerDashboard from '@/components/VolunteerDashboard';
 import PantryLoginModal from '@/components/PantryLoginModal';
+import { applyOverlays, SHELF_UPDATED_EVENT, writeShelfOverlay } from '@/lib/shelfSync';
 import {
   Search,
   Mic,
@@ -32,6 +33,16 @@ const PantryMap = dynamic(() => import('@/components/PantryMap'), {
   ),
 });
 
+type BrowserSpeechRecognition = {
+  lang: string;
+  interimResults: boolean;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((event: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
+  start: () => void;
+};
+
 export default function Home() {
   // Navigation & Search State
   const [pantriesList, setPantriesList] = useState<Pantry[]>(BALTIMORE_PANTRIES);
@@ -48,18 +59,38 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   const handleRegisterNewPantry = (newPantry: Pantry) => {
-    setPantriesList((prev) => [newPantry, ...prev]);
+    setPantriesList((prev) => applyOverlays([newPantry, ...prev]));
     setSelectedPantry(newPantry);
   };
 
+  useEffect(() => {
+    const sync = () => {
+      setPantriesList((prev) => {
+        const next = applyOverlays(prev);
+        setSelectedPantry((current) => {
+          if (!current) return current;
+          return next.find((p) => p.id === current.id) || current;
+        });
+        return next;
+      });
+    };
+    sync();
+    window.addEventListener('storage', sync);
+    window.addEventListener(SHELF_UPDATED_EVENT, sync);
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener(SHELF_UPDATED_EVENT, sync);
+    };
+  }, []);
+
   const handleUpdateInventory = (category: string, band: 'plenty' | 'low' | 'out') => {
     const targetId = authenticatedPantry?.id;
-    setPantriesList((prev) =>
-      prev.map((p) => {
+    setPantriesList((prev) => {
+      const next = prev.map((p) => {
         if ((targetId && p.id === targetId) || (!targetId && p.name.includes('Northside'))) {
           const updatedItems = (p.shelf_items || []).map((it) =>
             it.category_name.toLowerCase() === category.toLowerCase()
-              ? { ...it, band, minutes_ago: 1 }
+              ? { ...it, band, minutes_ago: 0, source: 'volunteer_correction', confidence: 1 }
               : it
           );
           const updatedPantry = { ...p, shelf_items: updatedItems };
@@ -69,25 +100,43 @@ export default function Home() {
           if (authenticatedPantry?.id === p.id) {
             setAuthenticatedPantry(updatedPantry);
           }
+          writeShelfOverlay(
+            p.id,
+            updatedItems.map((it) => ({
+              category_name: it.category_name,
+              category_emoji: it.category_emoji,
+              band: it.band,
+              estimated_qty: it.estimated_qty,
+              confidence: it.confidence,
+              source: it.source,
+              minutes_ago: it.minutes_ago,
+            }))
+          );
           return updatedPantry;
         }
         return p;
-      })
-    );
+      });
+      return next;
+    });
   };
 
   // Speech recognition handler
   const handleVoiceSearch = () => {
     if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
+      const speechWindow = window as Window & {
+        SpeechRecognition?: new () => BrowserSpeechRecognition;
+        webkitSpeechRecognition?: new () => BrowserSpeechRecognition;
+      };
+      const SpeechRecognitionImpl = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+      if (!SpeechRecognitionImpl) return;
+      const recognition = new SpeechRecognitionImpl();
       recognition.lang = language === 'es' ? 'es-ES' : 'en-US';
       recognition.interimResults = false;
 
       recognition.onstart = () => setIsListening(true);
       recognition.onend = () => setIsListening(false);
       recognition.onerror = () => setIsListening(false);
-      recognition.onresult = (event: any) => {
+      recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         setQuery(transcript);
         handleExecuteSearch(transcript);
@@ -103,8 +152,15 @@ export default function Home() {
   const handleExecuteSearch = (searchQuery: string) => {
     setQuery(searchQuery);
     setHasSearched(true);
-    // Select first matching pantry automatically for detail view on desktop
-    setSelectedPantry(BALTIMORE_PANTRIES[0]);
+    const q = searchQuery.trim().toLowerCase();
+    const match =
+      pantriesList.find(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.neighborhood.toLowerCase().includes(q) ||
+          p.address.toLowerCase().includes(q)
+      ) || pantriesList[0];
+    setSelectedPantry(match);
   };
 
   // Filtered Pantries
