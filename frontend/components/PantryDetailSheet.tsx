@@ -11,6 +11,18 @@ interface PantryDetailSheetProps {
 
 export default function PantryDetailSheet({ pantry, onClose }: PantryDetailSheetProps) {
   const [feedbackSent, setFeedbackSent] = useState<string | null>(null);
+  const freshnessMinutes = Math.min(
+    ...((pantry.shelf_items || []).map((item) => item.minutes_ago ?? 9999).concat([9999]))
+  );
+  const freshnessLabel =
+    freshnessMinutes === 0
+      ? 'just now'
+      : freshnessMinutes < 9999
+        ? `${freshnessMinutes} min ago`
+        : 'recently';
+  const isLive = (pantry.shelf_items || []).some(
+    (item) => item.source === 'prediction' || item.source === 'volunteer_correction'
+  );
 
   const getBandStyles = (band: 'plenty' | 'low' | 'out') => {
     switch (band) {
@@ -46,9 +58,15 @@ export default function PantryDetailSheet({ pantry, onClose }: PantryDetailSheet
       {/* Header */}
       <div className="flex justify-between items-start">
         <div>
-          <div className="inline-block bg-slate-200/70 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full mb-2">
-            Sample data
-          </div>
+          {isLive ? (
+            <div className="inline-block bg-emerald-100 text-emerald-800 text-xs font-semibold px-2.5 py-0.5 rounded-full mb-2">
+              Live shelf estimate
+            </div>
+          ) : (
+            <div className="inline-block bg-slate-200/70 text-slate-700 text-xs font-semibold px-2.5 py-0.5 rounded-full mb-2">
+              Sample data
+            </div>
+          )}
           <h2 className="text-2xl font-bold tracking-tight text-emerald-950">{pantry.name}</h2>
           <p className="text-sm text-slate-600">{pantry.address}</p>
           <div className="mt-1 font-semibold text-emerald-800 text-sm flex items-center gap-1.5">
@@ -93,7 +111,7 @@ export default function PantryDetailSheet({ pantry, onClose }: PantryDetailSheet
           <h3 className="font-bold text-base text-emerald-950">On the shelves</h3>
           <span className="text-xs text-slate-500 flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            40 min ago
+            {freshnessLabel}
           </span>
         </div>
 

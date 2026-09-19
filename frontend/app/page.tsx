@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { BALTIMORE_PANTRIES, Pantry } from '@/lib/pantryData';
 import PantryDetailSheet from '@/components/PantryDetailSheet';
 import VolunteerDashboard from '@/components/VolunteerDashboard';
 import PantryLoginModal from '@/components/PantryLoginModal';
+import { applyOverlays, SHELF_UPDATED_EVENT, writeShelfOverlay } from '@/lib/shelfSync';
 import {
   Search,
   Mic,
@@ -48,18 +49,29 @@ export default function Home() {
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   const handleRegisterNewPantry = (newPantry: Pantry) => {
-    setPantriesList((prev) => [newPantry, ...prev]);
+    setPantriesList((prev) => applyOverlays([newPantry, ...prev]));
     setSelectedPantry(newPantry);
   };
 
+  useEffect(() => {
+    const sync = () => setPantriesList((prev) => applyOverlays(prev));
+    sync();
+    window.addEventListener('storage', sync);
+    window.addEventListener(SHELF_UPDATED_EVENT, sync);
+    return () => {
+      window.removeEventListener('storage', sync);
+      window.removeEventListener(SHELF_UPDATED_EVENT, sync);
+    };
+  }, []);
+
   const handleUpdateInventory = (category: string, band: 'plenty' | 'low' | 'out') => {
     const targetId = authenticatedPantry?.id;
-    setPantriesList((prev) =>
-      prev.map((p) => {
+    setPantriesList((prev) => {
+      const next = prev.map((p) => {
         if ((targetId && p.id === targetId) || (!targetId && p.name.includes('Northside'))) {
           const updatedItems = (p.shelf_items || []).map((it) =>
             it.category_name.toLowerCase() === category.toLowerCase()
-              ? { ...it, band, minutes_ago: 1 }
+              ? { ...it, band, minutes_ago: 0, source: 'volunteer_correction', confidence: 1 }
               : it
           );
           const updatedPantry = { ...p, shelf_items: updatedItems };
@@ -69,11 +81,24 @@ export default function Home() {
           if (authenticatedPantry?.id === p.id) {
             setAuthenticatedPantry(updatedPantry);
           }
+          writeShelfOverlay(
+            p.id,
+            updatedItems.map((it) => ({
+              category_name: it.category_name,
+              category_emoji: it.category_emoji,
+              band: it.band,
+              estimated_qty: it.estimated_qty,
+              confidence: it.confidence,
+              source: it.source,
+              minutes_ago: it.minutes_ago,
+            }))
+          );
           return updatedPantry;
         }
         return p;
-      })
-    );
+      });
+      return next;
+    });
   };
 
   // Speech recognition handler
